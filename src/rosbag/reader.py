@@ -63,7 +63,7 @@ class RosbagDataLoader:
         return self.data.get(topic, [])
     
     def _setup_ground_truth_interpolators(self):
-        """Build interpolation functions for position, orientation, and velocity from kinematic state."""
+        """Load kinematic state data for ground truth generation."""
         kinematic_messages = self.data.get('/localization/kinematic_state', [])
         if not kinematic_messages:
             self.has_ground_truth = False
@@ -96,21 +96,18 @@ class RosbagDataLoader:
                 twist.angular.x, twist.angular.y, twist.angular.z
             ])
         
-        timestamps = np.array(timestamps)
-        positions = np.array(positions)
-        orientations = np.array(orientations)
-        velocities = np.array(velocities)
-        
-        # Create interpolators
-        self.time_range = (timestamps.min(), timestamps.max())
-        self.pos_interp = interp1d(timestamps, positions, axis=0, kind='linear', 
-                                  bounds_error=False, fill_value='extrapolate')
-        self.vel_interp = interp1d(timestamps, velocities, axis=0, kind='linear',
-                                  bounds_error=False, fill_value='extrapolate')
-        self.quat_interp = interp1d(timestamps, orientations, axis=0, kind='linear',
-                                   bounds_error=False, fill_value='extrapolate')
+        self.timestamps = np.array(timestamps)
+        self.positions = np.array(positions)
+        self.orientations = np.array(orientations)
+        self.velocities = np.array(velocities)
+        self.time_range = (self.timestamps.min(), self.timestamps.max())
         self.has_ground_truth = True
-    
+
+    def _get_nearest_state(self, query_time):
+        """Return position, orientation, velocity at the nearest timestamp."""
+        idx = int(np.abs(self.timestamps - query_time).argmin())
+        return (self.positions[idx], self.orientations[idx], self.velocities[idx])
+        
     def generate_ground_truth(self, trajectory_msg, trajectory_timestamp):
         """
         Generate ground truth trajectory points corresponding to a planned trajectory.
@@ -179,10 +176,8 @@ class RosbagDataLoader:
                     print(f"[DEBUG] Point {i} skipped: time {point_time:.3f}s outside range [{self.time_range[0]:.3f}, {self.time_range[1]:.3f}]")
                 continue
             
-            # Interpolate ground truth state at this time
-            gt_position = self.pos_interp(point_time)
-            gt_velocity = self.vel_interp(point_time)
-            gt_orientation = self.quat_interp(point_time)
+            # Get ground truth state from nearest localization sample
+            gt_position, gt_orientation, gt_velocity = self._get_nearest_state(point_time)
             
             # Normalize quaternion
             quat_norm = np.linalg.norm(gt_orientation)
@@ -241,9 +236,13 @@ class RosbagDataLoader:
         search_start = max(self.time_range[0], base_time - 5.0)  # 5 seconds before
         search_end = min(self.time_range[1], base_time + 10.0)   # 10 seconds after
         
-        # Sample positions in the search window
-        search_times = np.linspace(search_start, search_end, 200)
-        search_positions = self.pos_interp(search_times)
+        # # Get recorded positions within the search window
+        mask = (self.timestamps >= search_start) & (self.timestamps <= search_end)
+        if not np.any(mask):
+            print("[WARNING] No localization data in search window, using original timestamp")
+            return base_time
+        search_times = self.timestamps[mask]
+        search_positions = self.positions[mask]
         
         # Find the time with minimum distance to planned start position
         distances = np.sqrt((search_positions[:, 0] - planned_x)**2 + 

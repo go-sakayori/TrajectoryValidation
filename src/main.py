@@ -28,9 +28,6 @@ def main():
 
     # Read rosbag and store messages using RosbagDataLoader
     loader = RosbagDataLoader(input_bag, topics)
-    for topic in topics:
-        messages = loader.get_messages(topic)
-        print(f"Read {len(messages)} messages from topic: {topic}")
     
     # Generate ground truth trajectories
     trajectory_messages = loader.get_messages('/diffusion_planner/trajectories')
