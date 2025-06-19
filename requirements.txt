@@ -1,0 +1,9 @@
+rosbag
+numpy
+pandas
+rospy
+rosbag_tools
+pyyaml
+matplotlib
+scipy
+pillow
