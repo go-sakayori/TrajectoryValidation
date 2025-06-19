@@ -1,0 +1,3 @@
+- /localization/kinematic_state
+- /perception/object_recognition/tracking/objects
+- /diffusion_planner/trajectories
