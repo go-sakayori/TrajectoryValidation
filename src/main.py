@@ -31,17 +31,16 @@ def main():
     
     # Generate ground truth trajectories
     trajectory_messages = loader.get_messages('/diffusion_planner/trajectories')
-    print(f"\nGenerating ground truth for {len(trajectory_messages)} planned trajectories...")
+    # print(trajectory_messages[0])
+    # exit()
     
     # Store trajectory data for visualization
     planned_trajectories = []
     ground_truth_trajectories = []
     
-    for i, (traj_msg, traj_timestamp) in enumerate(trajectory_messages):
-        ground_truth_points = loader.generate_ground_truth(traj_msg, traj_timestamp)
+    for i, traj_msg in enumerate(trajectory_messages):
+        ground_truth_points = loader.generate_ground_truth(traj_msg)
         if ground_truth_points:
-            print(f"Trajectory {i+1}: Generated {len(ground_truth_points)} ground truth points")
-            
             # Store for visualization
             if traj_msg.trajectories:
                 planned_points = traj_msg.trajectories[0].points

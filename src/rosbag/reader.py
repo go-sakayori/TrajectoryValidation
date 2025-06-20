@@ -44,11 +44,11 @@ class RosbagDataLoader:
         type_map = {topic.name: topic.type for topic in topic_types}
         
         while reader.has_next():
-            (topic, data, timestamp) = reader.read_next()
+            (topic, data, _) = reader.read_next()
             if topic in self.topics:
                 msg_type = get_message(type_map[topic])
                 msg = deserialize_message(data, msg_type)
-                self.data[topic].append((msg, timestamp))
+                self.data[topic].append(msg)
 
     def get_messages(self, topic):
         """
@@ -58,7 +58,7 @@ class RosbagDataLoader:
             topic (str): Topic name.
 
         Returns:
-            list: List of (msg, t) tuples for the topic.
+            list: List of msg for the topic.
         """
         return self.data.get(topic, [])
     
@@ -74,9 +74,9 @@ class RosbagDataLoader:
         orientations = []
         velocities = []
         
-        for msg, timestamp in kinematic_messages:
-            # Convert ROS timestamp to seconds
-            t = timestamp / 1e9  # nanoseconds to seconds
+        for msg in kinematic_messages:
+            # Convert ROS header timestamp to seconds
+            t = msg.header.stamp.sec + msg.header.stamp.nanosec / 1e9  # seconds
             timestamps.append(t)
             
             # Extract position
@@ -108,13 +108,12 @@ class RosbagDataLoader:
         idx = int(np.abs(self.timestamps - query_time).argmin())
         return (self.positions[idx], self.orientations[idx], self.velocities[idx])
         
-    def generate_ground_truth(self, trajectory_msg, trajectory_timestamp):
+    def generate_ground_truth(self, trajectory_msg):
         """
         Generate ground truth trajectory points corresponding to a planned trajectory.
         
         Args:
             trajectory_msg: The planned trajectory message
-            trajectory_timestamp: Timestamp when the trajectory was published (nanoseconds)
         
         Returns:
             List of ground truth trajectory points
@@ -122,37 +121,24 @@ class RosbagDataLoader:
         if not self.has_ground_truth or not trajectory_msg.trajectories:
             return []
         
-        planned_traj = trajectory_msg.trajectories[0]  # Use first trajectory
+        planned_traj = trajectory_msg.trajectories[0]  # Use first trajectory (temporary)
         ground_truth_points = []
         
         # Convert trajectory timestamp to seconds
-        base_time = trajectory_timestamp / 1e9
+        base_time = planned_traj.header.stamp.sec + planned_traj.header.stamp.nanosec / 1e9
         
         # Try to find the best execution start time by matching the first planned point
         # to the closest actual vehicle position
         execution_start_time = self._find_execution_start_time(planned_traj, base_time)
-        
-        # Optional debug output (can be enabled for troubleshooting)
-        debug_enabled = False
-        if debug_enabled:
-            print(f"[DEBUG] Trajectory timestamp: {base_time:.3f}s")
-            print(f"[DEBUG] Estimated execution start: {execution_start_time:.3f}s")
-            print(f"[DEBUG] Kinematic data range: {self.time_range[0]:.3f}s to {self.time_range[1]:.3f}s")
-            print(f"[DEBUG] Planned trajectory has {len(planned_traj.points)} points")
-        
+                
         point_times = []
         
-        # Check if trajectory points have valid time_from_start values
-        has_valid_timestamps = any(
-            (point.time_from_start.sec + point.time_from_start.nanosec / 1e9) > 0.001 
-            for point in planned_traj.points
-        )
+        # Check if trajectory points have valid time_from_start values and are sorted in ascending order
+        time_stamps = [point.time_from_start.sec + point.time_from_start.nanosec / 1e9 for point in planned_traj.points]
+        has_valid_timestamps = all(earlier <= later for earlier, later in zip(time_stamps, time_stamps[1:]))
         
         if not has_valid_timestamps:
-            if debug_enabled:
-                print(f"[WARNING] Trajectory points have invalid timestamps, using estimated timing")
-            # Estimate timing based on trajectory length and assumed vehicle speed
-            # Typical trajectory planning uses 0.1s intervals
+            print(f"[WARNING] Trajectory points have invalid timestamps, using estimated timing")
             estimated_interval = 0.1  # seconds
         
         for i, point in enumerate(planned_traj.points):
@@ -164,16 +150,10 @@ class RosbagDataLoader:
                 point_time = execution_start_time + i * estimated_interval
             
             point_times.append(point_time)
-            
-            # Debug first few points
-            if debug_enabled and i < 3:
-                time_offset = point.time_from_start.sec + point.time_from_start.nanosec / 1e9
-                print(f"[DEBUG] Point {i}: time_from_start={time_offset:.3f}s, absolute_time={point_time:.3f}s, estimated={not has_valid_timestamps}")
+    
             
             # Skip if outside our kinematic data range
             if point_time < self.time_range[0] or point_time > self.time_range[1]:
-                if debug_enabled and i < 3:  # Debug first few points
-                    print(f"[DEBUG] Point {i} skipped: time {point_time:.3f}s outside range [{self.time_range[0]:.3f}, {self.time_range[1]:.3f}]")
                 continue
             
             # Get ground truth state from nearest localization sample
@@ -202,20 +182,6 @@ class RosbagDataLoader:
             
             ground_truth_points.append(gt_point)
         
-        # Debug output for ground truth generation
-        if debug_enabled and ground_truth_points:
-            print(f"[DEBUG] Generated {len(ground_truth_points)} ground truth points")
-            first_gt = ground_truth_points[0]
-            last_gt = ground_truth_points[-1]
-            print(f"[DEBUG] First GT point: ({first_gt.pose.position.x:.2f}, {first_gt.pose.position.y:.2f})")
-            print(f"[DEBUG] Last GT point: ({last_gt.pose.position.x:.2f}, {last_gt.pose.position.y:.2f})")
-            
-            # Check if all points are the same (indicating a problem)
-            positions = [(p.pose.position.x, p.pose.position.y) for p in ground_truth_points]
-            unique_positions = set(positions)
-            if len(unique_positions) == 1:
-                print(f"[WARNING] All ground truth points have the same position! This indicates a timing issue.")
-                print(f"[DEBUG] Point times range: {min(point_times):.3f}s to {max(point_times):.3f}s")
         
         return ground_truth_points
     
@@ -250,10 +216,7 @@ class RosbagDataLoader:
         min_dist_idx = np.argmin(distances)
         best_start_time = search_times[min_dist_idx]
         min_distance = distances[min_dist_idx]
-        
-        # Always log execution start time since it's important for validation
-        print(f"Found execution start time: {best_start_time:.3f}s (distance to planned start: {min_distance:.2f}m)")
-        
+                
         # If the minimum distance is very large, fall back to the original timestamp
         if min_distance > 50.0:  # 50 meters tolerance
             print(f"[WARNING] Large position mismatch ({min_distance:.2f}m), using original timestamp")
